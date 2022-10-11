@@ -48,8 +48,12 @@ func TestProcessor(t *testing.T) {
 			expectedNumberOfDataRows: 0,
 		},
 		{
-			srcText:                  jtl_good_01,
-			expectedNumberOfDataRows: 9,
+			srcText:                     jtl_good_01,
+			expectedNumberOfDataRows:    9,
+			indicesOfDataRowsToValidate: []int{0},
+			expectedDataRowValues: []*jtl.DataRow{
+				{1662749136019, 170, "get 1KiB.html", 200, "OK", "Thread Group 1-1", "text", true, "", 1430, 0, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 162, 0, 100},
+			},
 		},
 	} {
 		if err := testCase.RunTest(); err != nil {

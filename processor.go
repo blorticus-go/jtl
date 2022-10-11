@@ -218,6 +218,7 @@ func extractDataFromCsvRow(rowTextWithoutNewline string, columnTypesInOrder *[]E
 				return nil, fmt.Errorf("cannot convert allThreads column (%s) to int", columnStringValue)
 			}
 		case RequestURL:
+			dataRow.RequestURLString = columnStringValue
 		case TimeToFirstByte:
 			if dataRow.TimeToFirstByte, err = stringToIntOrNegativeOneOnEmpty(columnStringValue); err != nil {
 				return nil, fmt.Errorf("cannot convert Latency column (%s) to int", columnStringValue)
