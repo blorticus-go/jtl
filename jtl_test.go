@@ -32,9 +32,9 @@ func (testCase *ProcessorTestCase) RunTest() error {
 		return fmt.Errorf("expected (%d) data rows, got = (%d)", testCase.expectedNumberOfDataRows, len(gotDataRows))
 	}
 
-	for _, i := range testCase.indicesOfDataRowsToValidate {
-		if err := compareTwoDataRows(testCase.expectedDataRowValues[i], gotDataRows[i]); err != nil {
-			return fmt.Errorf("for data row (%d): %s", i+1, err.Error())
+	for indexOfExpectedDataRowValues, indexOfGotDataRow := range testCase.indicesOfDataRowsToValidate {
+		if err := compareTwoDataRows(testCase.expectedDataRowValues[indexOfExpectedDataRowValues], gotDataRows[indexOfGotDataRow]); err != nil {
+			return fmt.Errorf("for data row (%d): %s", indexOfGotDataRow+1, err.Error())
 		}
 	}
 
@@ -50,9 +50,10 @@ func TestProcessor(t *testing.T) {
 		{
 			srcText:                     jtl_good_01,
 			expectedNumberOfDataRows:    9,
-			indicesOfDataRowsToValidate: []int{0},
+			indicesOfDataRowsToValidate: []int{0, 3},
 			expectedDataRowValues: []*jtl.DataRow{
 				{1662749136019, 170, "get 1KiB.html", 200, "OK", "Thread Group 1-1", "text", true, "", 1430, 0, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 162, 0, 100},
+				{1662749136281, 43, "get 1KiB.html", 200, "OK", "Thread Group 1-2", "text", true, "", -1, 2122, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 43, 0, 1},
 			},
 		},
 	} {
@@ -84,8 +85,8 @@ func compareTwoDataRows(expected, got *jtl.DataRow) error {
 	if expected.DataType != got.DataType {
 		return fmt.Errorf("Expected DataType (%s), got (%s)", expected.DataType, got.DataType)
 	}
-	if expected.SuccessFlag != got.SuccessFlag {
-		return fmt.Errorf("Expected SuccessFlag (%t), got (%t)", expected.SuccessFlag, got.SuccessFlag)
+	if expected.RequestWasSuccessful != got.RequestWasSuccessful {
+		return fmt.Errorf("Expected SuccessFlag (%t), got (%t)", expected.RequestWasSuccessful, got.RequestWasSuccessful)
 	}
 	if expected.FailureMessage != got.FailureMessage {
 		return fmt.Errorf("Expected FailureMessage (%s), got (%s)", expected.FailureMessage, got.FailureMessage)
@@ -125,7 +126,7 @@ var jtl_good_01 = `timeStamp,elapsed,label,responseCode,responseMessage,threadNa
 1662749136019,170,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,162,0,100
 1662749136192,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
 1662749136237,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
-1662749136281,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
+1662749136281,43,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
 1662749136325,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
 1662749136370,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
 1662749136414,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
