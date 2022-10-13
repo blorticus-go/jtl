@@ -4,25 +4,53 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 )
 
-type Processor struct {
-	dataRows                   []*DataRow
-	columnsPresentInDataSource columnsPresent
+// import (
+// 	"bufio"
+// 	"fmt"
+// 	"io"
+// 	"strconv"
+// 	"strings"
+// )
 
-	overallSummary          *SummaryContainer
-	summaryByMovingTPS      *SummaryContainer
-	summariesByRequestSize  map[uint64]*SummaryContainer
-	summariesByResponseSize map[uint64]*SummaryContainer
-	summariesByRequestURL   map[string]*SummaryContainer
-
-	setOfAllSummarizers *AllSummarizedDimensions
+// LoggerSet contains two loggers: one for detailed, verbose output, and the other for Informational output.
+// If a logger is set to nil, that type of output won't be generated.
+type LoggerSet struct {
+	VerboseLogging       *log.Logger
+	InformationalLogging *log.Logger
 }
 
-func NewProcessorFromCsvData(reader io.Reader) (*Processor, error) {
+// Processor is an entity that consumes a JTL data source and can perform analysis of the data in the source.
+type Processor struct {
+	loggerSet                      *LoggerSet
+	columnTypesInOrder             []ColumnType
+	columnsInDataSourceLookupTable *columnsPresent
+}
+
+// NewProcessor creates a new, empty Processor.
+func NewProcessor() *Processor {
+	return &Processor{
+		loggerSet: nil,
+	}
+}
+
+// UsingLogger attaches a LoggerSet to the Processor.
+func (processor *Processor) UsingLoggers(loggerSet *LoggerSet) *Processor {
+	processor.loggerSet = loggerSet
+	return processor
+}
+
+// PopulateFromCsvData consumes JTL in CSV format and sets that as the data source for the Processor methods.
+// The first line must be a JTL CSV header.  For each subsequent row, the number of columns must match the
+// number of header columns.
+func (processor *Processor) PopulateFromCsvData(reader io.Reader) (*Processor, error) {
 	scanner := bufio.NewScanner(reader)
+
+	var err error
 
 	if !scanner.Scan() {
 		if scanner.Err() != nil {
@@ -31,7 +59,7 @@ func NewProcessorFromCsvData(reader io.Reader) (*Processor, error) {
 		return nil, fmt.Errorf("no header found")
 	}
 
-	inOrderListOfColumnsByType, columnsPresentInHeaders, err := extractColumnTypesFromHeader(scanner.Text())
+	processor.columnTypesInOrder, processor.columnsInDataSourceLookupTable, err = extractDataSourceColumnsFromCsvHeader(scanner.Text())
 	if err != nil {
 		return nil, err
 	}
@@ -39,254 +67,57 @@ func NewProcessorFromCsvData(reader io.Reader) (*Processor, error) {
 	dataRows := make([]*DataRow, 0, 100)
 
 	for scanner.Scan() {
-		dataRow, err := extractDataFromCsvRow(scanner.Text(), &inOrderListOfColumnsByType)
+		dataRow, err := extractDataFromCsvRow(scanner.Text(), &processor.columnTypesInOrder)
 		if err != nil {
 			return nil, err
 		}
 		dataRows = append(dataRows, dataRow)
 	}
 
-	return &Processor{
-		dataRows:                   dataRows,
-		columnsPresentInDataSource: *columnsPresentInHeaders,
-	}, nil
+	if scanner.Err() != nil {
+		return nil, scanner.Err()
+	}
+
+	return processor, nil
 }
 
+// SummarizationIteratorFor returns a SummerizationIterator, which can be used to walk through SummaryData available
+// from the data source.  The dimensions describe the types
+func (processor *Processor) SummarizationIteratorFor(dimensions ...SummarizableDimension) (*SummarizationIterator, error) {
+	return nil, nil
+}
+
+// DataColumns returns the data columns present in the data source in the same order that they were presented (e.g., for CSV
+// data source, it is the same order as the header column names).
+func (processor *Processor) DataColumns() []*ColumnType {
+	return nil
+}
+
+// DataRows returns each row of data from the data source as a standard struct in the same order as they are found in the
+// data source.
 func (processor *Processor) DataRows() []*DataRow {
-	return processor.dataRows
+	return nil
 }
 
-type computableDimensions struct {
-	SuccessCount        bool
-	MovingTPSStatistics bool
-	TTFBStatistics      bool
-	TTLBStatistics      bool
-}
-
-type trackingKeys struct {
-	RequestSize  bool
-	ResponseSize bool
-	ResponseCode bool
-	URL          bool
-}
-
-func (processor *Processor) SummarizedData() (*AllSummarizedDimensions, error) {
-	if processor.setOfAllSummarizers != nil {
-		return processor.setOfAllSummarizers, nil
-	}
-
-	canCompute := &computableDimensions{
-		SuccessCount:        processor.columnsPresentInDataSource.SuccessFlag,
-		MovingTPSStatistics: processor.columnsPresentInDataSource.TimestampAsUnixEpochMs,
-		TTFBStatistics:      processor.columnsPresentInDataSource.TimeToFirstByte,
-		TTLBStatistics:      processor.columnsPresentInDataSource.TimeToLastByte,
-	}
-
-	canProvideInfoBy := &trackingKeys{
-		RequestSize:  processor.columnsPresentInDataSource.RequestBodySizeInBytes,
-		ResponseSize: processor.columnsPresentInDataSource.ResponseBytesReceived,
-		ResponseCode: processor.columnsPresentInDataSource.ResponseCode,
-		URL:          processor.columnsPresentInDataSource.RequestURLString,
-	}
-
-	overallSummaries := makeSummaryContainer(canCompute)
-
-	summaryByRequestSize := make(map[int]*SummaryContainer)
-	summaryByResponseSize := make(map[int]*SummaryContainer)
-	summaryByResponseCode := make(map[int]*SummaryContainer)
-	summaryByURL := make(map[string]*SummaryContainer)
-
-	var requestSizeSummaryElement, responseSizeSummaryElement, responseCodeSummary, urlSummaryElement *SummaryContainer
-	var dimensionIsAlreadyInTheMap bool
-
-	for _, row := range processor.dataRows {
-		updateElementBasedOnDataRow(row, canCompute, overallSummaries)
-
-		if canProvideInfoBy.RequestSize {
-			if requestSizeSummaryElement, dimensionIsAlreadyInTheMap = summaryByRequestSize[row.RequestBodySizeInBytes]; !dimensionIsAlreadyInTheMap {
-				requestSizeSummaryElement = makeSummaryContainer(canCompute)
-				summaryByRequestSize[row.RequestBodySizeInBytes] = requestSizeSummaryElement
-			}
-
-			updateElementBasedOnDataRow(row, canCompute, requestSizeSummaryElement)
-		}
-
-		if canProvideInfoBy.ResponseSize {
-			if responseSizeSummaryElement, dimensionIsAlreadyInTheMap = summaryByResponseSize[row.ResponseBytesReceived]; !dimensionIsAlreadyInTheMap {
-				responseSizeSummaryElement = makeSummaryContainer(canCompute)
-				summaryByResponseSize[row.ResponseBytesReceived] = responseSizeSummaryElement
-			}
-
-			updateElementBasedOnDataRow(row, canCompute, responseSizeSummaryElement)
-		}
-
-		if canProvideInfoBy.ResponseCode {
-			if responseCodeSummary, dimensionIsAlreadyInTheMap = summaryByResponseCode[row.ResponseCode]; !dimensionIsAlreadyInTheMap {
-				responseCodeSummary = makeSummaryContainer(canCompute)
-				summaryByResponseCode[row.ResponseCode] = responseCodeSummary
-			}
-
-			updateElementBasedOnDataRow(row, canCompute, responseCodeSummary)
-		}
-
-		if canProvideInfoBy.URL {
-			if urlSummaryElement, dimensionIsAlreadyInTheMap = summaryByURL[row.RequestURLString]; !dimensionIsAlreadyInTheMap {
-				urlSummaryElement = makeSummaryContainer(canCompute)
-				summaryByURL[row.RequestURLString] = urlSummaryElement
-			}
-
-			updateElementBasedOnDataRow(row, canCompute, urlSummaryElement)
-		}
-	}
-
-	processor.setOfAllSummarizers = &AllSummarizedDimensions{
-		Overall: processor.overallSummary,
-	}
-
-	if canProvideInfoBy.RequestSize {
-		processor.setOfAllSummarizers.RequestSize = processor.summariesByRequestSize
-	}
-
-	if canProvideInfoBy.ResponseSize {
-		processor.setOfAllSummarizers.ResponseSize = processor.summariesByResponseSize
-	}
-
-	if canProvideInfoBy.URL {
-		processor.setOfAllSummarizers.RequestURL = processor.summariesByRequestURL
-	}
-
-	return processor.setOfAllSummarizers, nil
-}
-
-func updateElementBasedOnDataRow(row *DataRow, canCompute *computableDimensions, container *SummaryContainer) {
-	container.Information.TotalNumberOfRequests++
-
-	if canCompute.SuccessCount {
-		if row.RequestWasSuccessful {
-			container.Information.NumberOfSuccssfulRequests++
-		}
-	}
-
-	if canCompute.TTFBStatistics {
-		container.TimeToFirstBytes.individualDataPoints = append(container.TimeToFirstBytes.individualDataPoints, float64(row.TimeToFirstByte))
-	}
-
-	if canCompute.TTLBStatistics {
-		container.TimeToLastByte.individualDataPoints = append(container.TimeToFirstBytes.individualDataPoints, float64(row.TimeToLastByte))
-	}
-
-	if canCompute.MovingTPSStatistics {
-		timestampAsUnixEpochSeconds := row.TimestampAsUnixEpochMs / 1000
-		if count, thisTimestampIsInTheMap := container.MovingWindowTransactionsPerSecond.countOfSamplesByOneSecondTimestamp[timestampAsUnixEpochSeconds]; !thisTimestampIsInTheMap {
-			container.MovingWindowTransactionsPerSecond.countOfSamplesByOneSecondTimestamp[timestampAsUnixEpochSeconds] = 1
-		} else {
-			container.MovingWindowTransactionsPerSecond.countOfSamplesByOneSecondTimestamp[timestampAsUnixEpochSeconds] = count + 1
-		}
-	}
-
-}
-
-func makeSummaryContainer(thingsThatCanBeComputedInclude *computableDimensions) *SummaryContainer {
-	container := &SummaryContainer{
-		Information: &SummaryInformation{
-			TotalNumberOfRequests:     0,
-			NumberOfSuccssfulRequests: -1,
-		},
-	}
-
-	if thingsThatCanBeComputedInclude.SuccessCount {
-		container.Information.NumberOfSuccssfulRequests = 0
-	}
-
-	if thingsThatCanBeComputedInclude.MovingTPSStatistics {
-		container.MovingWindowTransactionsPerSecond = &SummaryStatisticsForTPSData{
-			countOfSamplesByOneSecondTimestamp: make(map[uint64]uint64),
-		}
-	}
-
-	if thingsThatCanBeComputedInclude.TTFBStatistics {
-		container.TimeToFirstBytes = &SummaryStatisticsForFloat64DataSet{
-			individualDataPoints: make([]float64, 0, 100),
-		}
-	}
-
-	if thingsThatCanBeComputedInclude.TTLBStatistics {
-		container.TimeToLastByte = &SummaryStatisticsForFloat64DataSet{
-			individualDataPoints: make([]float64, 0, 100),
-		}
-	}
-
-	return container
-}
-
-func extractColumnTypesFromHeader(headerLineWithoutNewline string) ([]EntryDataType, *columnsPresent, error) {
+func extractDataSourceColumnsFromCsvHeader(headerLineWithoutNewline string) ([]ColumnType, *columnsPresent, error) {
 	columnNamesAsStrings := strings.Split(headerLineWithoutNewline, ",")
 	if len(columnNamesAsStrings) == 0 {
 		return nil, nil, fmt.Errorf("no header columns found")
 	}
 
-	dataTypes := make([]EntryDataType, len(columnNamesAsStrings))
-	var columnsPresentInHeader columnsPresent
+	columnTypesInOrder := make([]ColumnType, len(columnNamesAsStrings))
 
-	for i, columnName := range columnNamesAsStrings {
-		switch columnName {
-		case "timeStamp":
-			dataTypes[i] = Timestamp
-			columnsPresentInHeader.TimestampAsUnixEpochMs = true
-		case "elapsed":
-			dataTypes[i] = TimeToLastByte
-			columnsPresentInHeader.TimeToLastByte = true
-		case "label":
-			dataTypes[i] = ResultLabel
-			columnsPresentInHeader.SampleResultLabel = true
-		case "responseCode":
-			dataTypes[i] = ResponseCode
-			columnsPresentInHeader.ResponseCode = true
-		case "responseMessage":
-			dataTypes[i] = ResponseMessage
-			columnsPresentInHeader.ResponseMessage = true
-		case "threadName":
-			dataTypes[i] = ThreadName
-			columnsPresentInHeader.ThreadNameText = true
-		case "dataType":
-			dataTypes[i] = DataType
-			columnsPresentInHeader.DataType = true
-		case "success":
-			dataTypes[i] = SuccessFlag
-			columnsPresentInHeader.SuccessFlag = true
-		case "failureMessage":
-			dataTypes[i] = FailureMessage
-			columnsPresentInHeader.FailureMessage = true
-		case "bytes":
-			dataTypes[i] = ResponseBytesReceived
-			columnsPresentInHeader.ResponseBytesReceived = true
-		case "sentBytes":
-			dataTypes[i] = RequestBodySizeInBytes
-			columnsPresentInHeader.RequestBodySizeInBytes = true
-		case "grpThreads":
-			dataTypes[i] = GroupThreads
-			columnsPresentInHeader.GroupThreads = true
-		case "allThreads":
-			dataTypes[i] = AllThreads
-			columnsPresentInHeader.AllThreads = true
-		case "URL":
-			dataTypes[i] = RequestURL
-			columnsPresentInHeader.RequestURLString = true
-		case "Latency":
-			dataTypes[i] = TimeToFirstByte
-			columnsPresentInHeader.TimeToFirstByte = true
-		case "IdleTime":
-			dataTypes[i] = IdleTime
-			columnsPresentInHeader.IdleTimeInMs = true
-		case "Connect":
-			dataTypes[i] = ConnectTime
-			columnsPresentInHeader.ConnectTimeInMs = true
-		default:
-			return nil, nil, fmt.Errorf("unrecognized column name (%s) in header", columnName)
+	for i, headerName := range columnNamesAsStrings {
+		if columnType, columnNameIsInMap := CsvHeaderLabelToColumnType[headerName]; !columnNameIsInMap {
+			return nil, nil, fmt.Errorf("csv file header (%s) not understood", headerName)
+		} else {
+			columnTypesInOrder[i] = columnType
 		}
 	}
 
-	return dataTypes, &columnsPresentInHeader, nil
+	columnsLookupTable := columnLookupTableFromColumnTypeSet(columnTypesInOrder)
+
+	return columnTypesInOrder, columnsLookupTable, nil
 }
 
 func extractDataFromCsvRow(rowTextWithoutNewline string, columnTypesInOrder *[]EntryDataType) (*DataRow, error) {
@@ -363,24 +194,4 @@ func extractDataFromCsvRow(rowTextWithoutNewline string, columnTypesInOrder *[]E
 	}
 
 	return dataRow, nil
-}
-
-func stringToIntOrNegativeOneOnEmpty(s string) (int, error) {
-	if s == "" {
-		return -1, nil
-	}
-
-	return strconv.Atoi(s)
-}
-
-func stringColumnToBool(s string) (bool, error) {
-	if s == "true" {
-		return true, nil
-	}
-
-	if s == "false" {
-		return false, nil
-	}
-
-	return false, fmt.Errorf("cannot convert string to boolean")
 }
