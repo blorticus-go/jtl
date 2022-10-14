@@ -26,10 +26,13 @@ func (summary *ColumnUniqueValueSummary) KeyAsAString() string {
 
 // AggregateSummary provides aggregate summary information.
 type AggregateSummary struct {
-	NumberOfMatchingRequests   uint
-	NumberOfSuccessfulRequests int64 // -1 if this dimension is not possible
-	TimeToFirstByteStatistics  *SummaryStatistics
-	TimeToLastByteStatistics   *SummaryStatistics
+	TimestampOfFirstDataEntryAsUnixEpochMs uint64
+	TimestampOfLastDataEntryAsUnixEpochMs  uint64
+	AverageTPSRate                         uint64
+	NumberOfMatchingRequests               uint
+	NumberOfSuccessfulRequests             int64 // -1 if this dimension is not possible
+	TimeToFirstByteStatistics              *SummaryStatistics
+	TimeToLastByteStatistics               *SummaryStatistics
 }
 
 // SummaryStatistics are summarized values for data series in a JTL data source.
@@ -324,6 +327,26 @@ func summarizeFromADataSource(dataSource DataSource, aggregateStatsShouldBeCompu
 	if aggregateStatsShouldBeComputed {
 		aggregateSummary := &AggregateSummary{
 			NumberOfMatchingRequests: tracker.aggregateData.numberOfRequests,
+		}
+
+		dataRows := dataSource.Rows()
+
+		if len(dataRows) == 0 {
+			aggregateSummary.AverageTPSRate = 0
+			aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = 0
+			aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = 0
+		} else {
+			timestampOfFirstEntry := dataRows[0].TimestampAsUnixEpochMs
+			timestampOfLastEntry := dataRows[len(dataRows)-1].TimestampAsUnixEpochMs
+			aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = timestampOfFirstEntry
+			aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = timestampOfLastEntry
+
+			timespanOfDataRowsInSeconds := (timestampOfLastEntry - timestampOfFirstEntry) / 1000
+			if timespanOfDataRowsInSeconds <= 0 {
+				aggregateSummary.AverageTPSRate = 0
+			} else {
+				aggregateSummary.AverageTPSRate = uint64(tracker.aggregateData.numberOfRequests) / timespanOfDataRowsInSeconds
+			}
 		}
 
 		if ttfbSummary, err := SummaryStatisticsFromDataSeries(tracker.aggregateData.timeToFirstByteSet); err != nil {

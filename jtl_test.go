@@ -230,6 +230,16 @@ func compareAggregateSummary(expect *jtl.AggregateSummary, got *jtl.AggregateSum
 		return fmt.Errorf("expected aggregate summary, got nil")
 	}
 
+	if expect.AverageTPSRate != got.AverageTPSRate {
+		return fmt.Errorf("expected aggregate summary AverageTPSRate = (%d), got = (%d)", expect.AverageTPSRate, got.AverageTPSRate)
+	}
+	if expect.TimestampOfFirstDataEntryAsUnixEpochMs != got.TimestampOfFirstDataEntryAsUnixEpochMs {
+		return fmt.Errorf("expected aggregate summary TimestampOfFirstDataEntryAsUnixEpochMs = (%d), got = (%d)", expect.TimestampOfFirstDataEntryAsUnixEpochMs, got.TimestampOfFirstDataEntryAsUnixEpochMs)
+	}
+	if expect.TimestampOfLastDataEntryAsUnixEpochMs != got.TimestampOfLastDataEntryAsUnixEpochMs {
+		return fmt.Errorf("expected aggregate summary TimestampOfLastDataEntryAsUnixEpochMs = (%d), got = (%d)", expect.TimestampOfLastDataEntryAsUnixEpochMs, got.TimestampOfLastDataEntryAsUnixEpochMs)
+	}
+
 	if expect.NumberOfMatchingRequests != got.NumberOfMatchingRequests {
 		return fmt.Errorf("expected aggregate summary NumberOfMatchingRequests = (%d), got (%d)", expect.NumberOfMatchingRequests, got.NumberOfMatchingRequests)
 	}
@@ -308,8 +318,11 @@ func TestProcessor(t *testing.T) {
 				{1662749136502, 43, "get 1KiB.html", "200", "OK", "Thread Group 1-1", "text", true, "", 1430, 0, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 43, 0, 0},
 			},
 			expectedAggregateSummary: &jtl.AggregateSummary{
-				NumberOfMatchingRequests:   9,
-				NumberOfSuccessfulRequests: 9,
+				NumberOfMatchingRequests:               9,
+				NumberOfSuccessfulRequests:             9,
+				TimestampOfFirstDataEntryAsUnixEpochMs: 1662749136019,
+				TimestampOfLastDataEntryAsUnixEpochMs:  1662749136502,
+				AverageTPSRate:                         0,
 				TimeToFirstByteStatistics: &jtl.SummaryStatistics{
 					Mean:                        56.44444444444444,
 					Median:                      43,
