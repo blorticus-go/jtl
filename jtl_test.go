@@ -9,33 +9,42 @@ import (
 )
 
 type ProcessorTestCase struct {
-	jtlDataAsCsvText            string
-	expectErrorOnPopulation     bool
-	expectedColumnSet           []jtl.ColumnType
-	expectedNumberOfDataRows    int
-	indicesOfDataRowsToValidate []int
-	expectedDataRowValues       []*jtl.DataRow
-	expectedDimensionKeyStats   map[jtl.SummarizableDimension]map[string]*jtl.SummaryStatistics
+	jtlDataAsCsvText                       string
+	expectFatalErrorOnCsvRead              bool
+	numberOfExpectedDataRowErrorsOnCsvRead int
+	expectedColumnSet                      jtl.TableOfColumns
+	expectedNumberOfDataRows               int
+	indicesOfDataRowsToValidate            []int
+	expectedDataRowValues                  []*jtl.DataRow
+	expectedAggregateSummary               *jtl.AggregateSummary
+	roundFloatResultsToTwoPlaces           bool
+	expectedSummariesForColumns            []*jtl.ColumnUniqueValueSummary
 }
 
 func (testCase *ProcessorTestCase) RunTest() error {
-	p, err := jtl.NewProcessor().PopulateFromCsvData(strings.NewReader(testCase.jtlDataAsCsvText))
-	if err != nil {
-		if !testCase.expectErrorOnPopulation {
-			return fmt.Errorf("on PopulateFromCsvData(), expected no error, got = (%s)", err.Error())
+	dataSource, dataRowErrors, fatalError := jtl.NewDataSourceFromCsv(strings.NewReader(testCase.jtlDataAsCsvText))
+
+	if fatalError != nil {
+		if !testCase.expectFatalErrorOnCsvRead {
+			return fmt.Errorf("on NewDataSourceFromCsv(), expected no fatal error, got = (%s)", fatalError.Error())
 		}
 		return nil
-	} else if testCase.expectErrorOnPopulation {
-		return fmt.Errorf("on PopulateFromCsvData(), expected error, got no error")
+	} else if testCase.expectFatalErrorOnCsvRead {
+		return fmt.Errorf("on NewDataSourceFromCsv(), expected error, got no error")
 	}
 
-	if err := compareColumnSets(testCase.expectedColumnSet, p.DataColumns()); err != nil {
+	if len(dataRowErrors) != testCase.numberOfExpectedDataRowErrorsOnCsvRead {
+		return fmt.Errorf("expected (%d) data row read errors, got (%d)", testCase.expectedNumberOfDataRows, len(dataRowErrors))
+	}
+
+	if err := compareColumnTables(testCase.expectedColumnSet, dataSource.AllAvailableColumns()); err != nil {
 		return err
 	}
 
-	gotDataRows := p.DataRows()
+	gotDataRows := dataSource.Rows()
+
 	if testCase.expectedNumberOfDataRows != len(gotDataRows) {
-		return fmt.Errorf("expected (%d) data rows, got (%d)", testCase.expectedNumberOfDataRows, len(p.DataRows()))
+		return fmt.Errorf("expected (%d) data rows, got (%d)", testCase.expectedNumberOfDataRows, len(gotDataRows))
 	}
 
 	for indexOfExpectedDataRowValues, indexOfGotDataRow := range testCase.indicesOfDataRowsToValidate {
@@ -44,73 +53,87 @@ func (testCase *ProcessorTestCase) RunTest() error {
 		}
 	}
 
-	summarizableDimensions := make([]jtl.SummarizableDimension, 0, len(testCase.expectedDimensionKeyStats))
-	for k := range testCase.expectedDimensionKeyStats {
-		summarizableDimensions = append(summarizableDimensions, k)
+	summarizer := jtl.NewSummarizerForDataSource(dataSource)
+
+	if err := summarizer.PreComputeAggregateSummaryAndSummariesForColumns(); err != nil {
+		return fmt.Errorf("on PreComputeAggregateSummaryAndSummariesForColumns() got error: %s", err.Error())
 	}
 
-	iterator, err := p.SummarizationIteratorFor(summarizableDimensions...)
+	gotAggregateSummary, err := summarizer.AggregateSummary()
 	if err != nil {
-		return fmt.Errorf("on SummarizationIteratorFor(), expected no error, got = (%s)", err.Error())
+		return fmt.Errorf("on AggregateSummary() from summarizer, got error: %s", err.Error())
 	}
 
-	if err := compareIteratorResultsToExpectedValues(testCase.expectedDimensionKeyStats, iterator); err != nil {
+	if err := compareAggregateSummary(testCase.expectedAggregateSummary, gotAggregateSummary); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func compareIteratorResultsToExpectedValues(expected map[jtl.SummarizableDimension]map[string]*jtl.SummaryStatistics, iterator *jtl.SummarizationIterator) error {
-	for dk := iterator.Next(); dk != nil; dk = iterator.Next() {
-		dimension := dk.Dimension
-		dimensionKeyMap := expected[dimension]
-		if dimensionKeyMap == nil {
-			return fmt.Errorf("expected to not see dimension (%s), got that dimension", jtl.SummarizableDimensionAsString[dimension])
-		}
-
-		expectedSummaryStats := dimensionKeyMap[dk.KeyAsString()]
-		if expectedSummaryStats == nil {
-			return fmt.Errorf("expected to not see key (%s) for dimension (%s), got that key", dk.KeyAsString(), jtl.SummarizableDimensionAsString[dimension])
-		}
-
-		gotSummaryStats := dk.Statistics
-
-		if expectedSummaryStats.Mean != gotSummaryStats.Mean {
-			return fmt.Errorf("on dimension (%s) key (%s), expected mean (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.Mean, gotSummaryStats.Mean)
-		}
-		if expectedSummaryStats.Median != gotSummaryStats.Median {
-			return fmt.Errorf("on dimension (%s) key (%s), expected median (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.Median, gotSummaryStats.Median)
-		}
-		if expectedSummaryStats.Minimum != gotSummaryStats.Minimum {
-			return fmt.Errorf("on dimension (%s) key (%s), expected minimum (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.Minimum, gotSummaryStats.Minimum)
-		}
-		if expectedSummaryStats.Maximum != gotSummaryStats.Maximum {
-			return fmt.Errorf("on dimension (%s) key (%s), expected maximum (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.Maximum, gotSummaryStats.Maximum)
-		}
-		if expectedSummaryStats.PopulationStandardDeviation != gotSummaryStats.PopulationStandardDeviation {
-			return fmt.Errorf("on dimension (%s) key (%s), expected pstdev (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.PopulationStandardDeviation, gotSummaryStats.PopulationStandardDeviation)
-		}
-		if expectedSummaryStats.ValueAt5thPercentile != gotSummaryStats.ValueAt5thPercentile {
-			return fmt.Errorf("on dimension (%s) key (%s), expected 5thpercentile (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.ValueAt5thPercentile, gotSummaryStats.ValueAt5thPercentile)
-		}
-		if expectedSummaryStats.ValueAt95thPercentile != gotSummaryStats.ValueAt95thPercentile {
-			return fmt.Errorf("on dimension (%s) key (%s), expected 95thpercentile (%f), got (%f)", jtl.SummarizableDimensionAsString[dimension], dk.KeyAsString(), expectedSummaryStats.ValueAt95thPercentile, gotSummaryStats.ValueAt95thPercentile)
-		}
+func compareColumnTables(expect jtl.TableOfColumns, got jtl.TableOfColumns) error {
+	if err := compareSingleColumnTableEntry(expect.AllThreads, got.AllThreads, "AllThreads"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ConnectTime, got.ConnectTime, "ConnectTime"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.DataType, got.DataType, "DataType"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.FailureMessage, got.FailureMessage, "FailureMessage"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.GroupThreads, got.GroupThreads, "GroupThreads"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.IdleTime, got.IdleTime, "IdleTime"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.RequestBodySizeInBytes, got.RequestBodySizeInBytes, "RequestBodySizeInBytes"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.RequestURL, got.RequestURL, "RequestURL"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ResponseBytesReceived, got.ResponseBytesReceived, "ResponseBytesReceived"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ResponseCodeOrErrorMessage, got.ResponseCodeOrErrorMessage, "ResponseCodeOrErrorMessage"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ResponseMessage, got.ResponseMessage, "ResponseMessage"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ResultLabel, got.ResultLabel, "ResultLabel"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.SuccessFlag, got.SuccessFlag, "SuccessFlag"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.ThreadName, got.ThreadName, "ThreadName"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.TimeToFirstByte, got.TimeToFirstByte, "TimeToFirstByte"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.TimeToLastByte, got.TimeToLastByte, "TimeToLastByte"); err != nil {
+		return err
+	}
+	if err := compareSingleColumnTableEntry(expect.AllThreads, got.AllThreads, "AllThreads"); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func compareColumnSets(expectedColumnSet []jtl.ColumnType, gotColumnSet []*jtl.ColumnType) error {
-	if len(expectedColumnSet) != len(gotColumnSet) {
-		return fmt.Errorf("expected (%d) columns, got (%d)", len(expectedColumnSet), len(gotColumnSet))
-	}
-
-	for i, expectedColumnType := range expectedColumnSet {
-		if *gotColumnSet[i] != expectedColumnType {
-			return fmt.Errorf("expected column with index (%d) to be (%s), got (%s)", i, jtl.ColumnTypeAsAstring[expectedColumnType], jtl.ColumnTypeAsAstring[*gotColumnSet[i]])
+func compareSingleColumnTableEntry(expect bool, got bool, columnNameAsText string) error {
+	if expect {
+		if !got {
+			return fmt.Errorf("expected column (%s), but no such column", columnNameAsText)
 		}
+	} else if got {
+		return fmt.Errorf("expected no column (%s), but got that column", columnNameAsText)
 	}
 
 	return nil
@@ -126,8 +149,8 @@ func compareTwoDataRows(expected, got *jtl.DataRow) error {
 	if expected.SampleResultLabel != got.SampleResultLabel {
 		return fmt.Errorf("Expected SampleResultLabel (%s), got (%s)", expected.SampleResultLabel, got.SampleResultLabel)
 	}
-	if expected.ResponseCode != got.ResponseCode {
-		return fmt.Errorf("Expected ResponseCode (%d), got (%d)", expected.ResponseCode, got.ResponseCode)
+	if expected.ResponseCodeOrErrorMessage != got.ResponseCodeOrErrorMessage {
+		return fmt.Errorf("Expected ResponseCode (%s), got (%s)", expected.ResponseCodeOrErrorMessage, got.ResponseCodeOrErrorMessage)
 	}
 	if expected.ResponseMessage != got.ResponseMessage {
 		return fmt.Errorf("Expected ResponseMessage (%s), got (%s)", expected.ResponseMessage, got.ResponseMessage)
@@ -172,15 +195,115 @@ func compareTwoDataRows(expected, got *jtl.DataRow) error {
 	return nil
 }
 
+func compareAggregateSummary(expect *jtl.AggregateSummary, got *jtl.AggregateSummary) error {
+	if expect == nil {
+		if got != nil {
+			return fmt.Errorf("expected aggregate summary to be nil, is not")
+		}
+		return nil
+	} else if got == nil {
+		return fmt.Errorf("expected aggregate summary, got nil")
+	}
+
+	if expect.NumberOfMatchingRequests != got.NumberOfMatchingRequests {
+		return fmt.Errorf("expected aggregate summary NumberOfMatchingRequests = (%d), got (%d)", expect.NumberOfMatchingRequests, got.NumberOfMatchingRequests)
+	}
+	if expect.NumberOfSuccessfulRequests != got.NumberOfSuccessfulRequests {
+		return fmt.Errorf("expected aggregate summary NumberOfSuccessfulRequests = (%d), got (%d)", expect.NumberOfSuccessfulRequests, got.NumberOfSuccessfulRequests)
+	}
+
+	if err := compareSummaryStatistics(expect.TimeToFirstByteStatistics, got.TimeToFirstByteStatistics); err != nil {
+		return fmt.Errorf("for aggregate summary TimeToFirstByteStatistics: %s", err.Error())
+	}
+	if err := compareSummaryStatistics(expect.TimeToLastByteStatistics, got.TimeToLastByteStatistics); err != nil {
+		return fmt.Errorf("for aggregate summary TimeToLastByteStatistics: %s", err.Error())
+	}
+
+	return nil
+}
+
+func compareSummaryStatistics(expectedSummaryStats *jtl.SummaryStatistics, gotSummaryStats *jtl.SummaryStatistics) error {
+	if expectedSummaryStats == nil {
+		if gotSummaryStats != nil {
+			return fmt.Errorf("expected no summary stats, got stats")
+		}
+		return nil
+	} else if gotSummaryStats == nil {
+		return fmt.Errorf("expected summary stats, got no stats")
+
+	}
+	if expectedSummaryStats.Mean != gotSummaryStats.Mean {
+		return fmt.Errorf("expected mean (%f), got (%f)", expectedSummaryStats.Mean, gotSummaryStats.Mean)
+	}
+	if expectedSummaryStats.Median != gotSummaryStats.Median {
+		return fmt.Errorf("expected median (%f), got (%f)", expectedSummaryStats.Median, gotSummaryStats.Median)
+	}
+	if expectedSummaryStats.Minimum != gotSummaryStats.Minimum {
+		return fmt.Errorf("expected minimum (%f), got (%f)", expectedSummaryStats.Minimum, gotSummaryStats.Minimum)
+	}
+	if expectedSummaryStats.Maximum != gotSummaryStats.Maximum {
+		return fmt.Errorf("expected maximum (%f), got (%f)", expectedSummaryStats.Maximum, gotSummaryStats.Maximum)
+	}
+	if expectedSummaryStats.PopulationStandardDeviation != gotSummaryStats.PopulationStandardDeviation {
+		return fmt.Errorf("expected pstdev (%f), got (%f)", expectedSummaryStats.PopulationStandardDeviation, gotSummaryStats.PopulationStandardDeviation)
+	}
+	if expectedSummaryStats.ValueAt5thPercentile != gotSummaryStats.ValueAt5thPercentile {
+		return fmt.Errorf("expected 5thpercentile (%f), got (%f)", expectedSummaryStats.ValueAt5thPercentile, gotSummaryStats.ValueAt5thPercentile)
+	}
+	if expectedSummaryStats.ValueAt95thPercentile != gotSummaryStats.ValueAt95thPercentile {
+		return fmt.Errorf("expected 95thpercentile (%f), got (%f)", expectedSummaryStats.ValueAt95thPercentile, gotSummaryStats.ValueAt95thPercentile)
+	}
+
+	return nil
+}
+
 func TestProcessor(t *testing.T) {
 	for testIndex, testCase := range []*ProcessorTestCase{
 		{
-			jtlDataAsCsvText:        jtl_header_only,
-			expectErrorOnPopulation: false,
-			expectedColumnSet: []jtl.ColumnType{jtl.Column.Timestamp, jtl.Column.TimeToLastByte, jtl.Column.ResultLabel, jtl.Column.ResponseCode, jtl.Column.ResponseMessage,
-				jtl.Column.ThreadName, jtl.Column.DataType, jtl.Column.RequestWasSuccesful, jtl.Column.FailureMessage, jtl.Column.ResponseBytesReceived,
-				jtl.Column.RequestBodySizeInBytes, jtl.Column.RequestURL, jtl.Column.TimeToFirstByte, jtl.Column.IdleTime, jtl.Column.ConnectTime},
+			jtlDataAsCsvText:          jtl_header_only,
+			expectFatalErrorOnCsvRead: false,
+			expectedColumnSet: jtl.TableOfColumns{AllThreads: true, ConnectTime: true, DataType: true, FailureMessage: true, GroupThreads: true, IdleTime: true, RequestBodySizeInBytes: true, RequestURL: true, ResponseBytesReceived: true,
+				ResponseCodeOrErrorMessage: true, ResponseMessage: true, ResultLabel: true, SuccessFlag: true, ThreadName: true, TimestampAsUnixEpochMs: true, TimeToFirstByte: true, TimeToLastByte: true},
 			expectedNumberOfDataRows: 0,
+			expectedAggregateSummary: &jtl.AggregateSummary{
+				NumberOfMatchingRequests:   0,
+				NumberOfSuccessfulRequests: 0,
+			},
+		},
+		{
+			jtlDataAsCsvText:          jtl_good_01,
+			expectFatalErrorOnCsvRead: false,
+			expectedColumnSet: jtl.TableOfColumns{AllThreads: true, ConnectTime: true, DataType: true, FailureMessage: true, GroupThreads: true, IdleTime: true, RequestBodySizeInBytes: true, RequestURL: true, ResponseBytesReceived: true,
+				ResponseCodeOrErrorMessage: true, ResponseMessage: true, ResultLabel: true, SuccessFlag: true, ThreadName: true, TimestampAsUnixEpochMs: true, TimeToFirstByte: true, TimeToLastByte: true},
+			expectedNumberOfDataRows:    9,
+			indicesOfDataRowsToValidate: []int{0, 4, 8},
+			expectedDataRowValues: []*jtl.DataRow{
+				{1662749136019, 170, "get 1KiB.html", "200", "OK", "Thread Group 1-1", "text", true, "", 1430, 0, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 162, 0, 100},
+				{1662749136325, 44, "get 1KiB.html", "200", "OK", "Thread Group 1-2", "text", true, "", -1, 2122, 1, 2, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 44, 0, 1},
+				{1662749136502, 43, "get 1KiB.html", "200", "OK", "Thread Group 1-1", "text", true, "", 1430, 0, 1, 1, "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html", 43, 0, 0},
+			},
+			expectedAggregateSummary: &jtl.AggregateSummary{
+				NumberOfMatchingRequests:   9,
+				NumberOfSuccessfulRequests: 9,
+				TimeToFirstByteStatistics: &jtl.SummaryStatistics{
+					Mean:                        56.44444444444444,
+					Median:                      43,
+					Maximum:                     162,
+					Minimum:                     43,
+					PopulationStandardDeviation: 37.321757464606534,
+					ValueAt5thPercentile:        43,
+					ValueAt95thPercentile:       44,
+				},
+				TimeToLastByteStatistics: &jtl.SummaryStatistics{
+					Mean:                        57.333333333333333,
+					Median:                      43,
+					Maximum:                     170,
+					Minimum:                     43,
+					PopulationStandardDeviation: 39.83577398380617,
+					ValueAt5thPercentile:        43,
+					ValueAt95thPercentile:       44,
+				},
+			},
 		},
 	} {
 		if err := testCase.RunTest(); err != nil {
@@ -192,13 +315,13 @@ func TestProcessor(t *testing.T) {
 var jtl_header_only = `timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
 `
 
-// var jtl_good_01 = `timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
-// 1662749136019,170,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,162,0,100
-// 1662749136192,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
-// 1662749136237,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
-// 1662749136281,43,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
-// 1662749136325,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
-// 1662749136370,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-// 1662749136414,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-// 1662749136458,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-// 1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0`
+var jtl_good_01 = `timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
+1662749136019,170,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,162,0,100
+1662749136192,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
+1662749136237,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
+1662749136281,43,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
+1662749136325,44,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,2,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
+1662749136370,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
+1662749136414,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
+1662749136458,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
+1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0`

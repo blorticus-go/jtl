@@ -24,3 +24,29 @@ stats, err := j.SummaryStatsByResponseSuccess()
 fmt.Printf("%f, %f, %f, %f\n", globalStats.TTFB.Mean, globalStats.TTFB.Max, globalStats.TTFB.Min, ...)
 
 ```
+
+In order to summarize:
+
+- foreach data row:
+    - foreach dimension that can be generated (based on available columns in data source)
+        - get dimension key
+        - add count, success, ttfb, ttlb to dimension/key
+    - 
+
+```golang
+type DataSource interface {
+    Rows() []*DataRow
+    HasColumn(ColumnType) bool
+}
+
+type Summarizer struct {}
+
+func NewSummarizer(usingDataSource DataSource) *Summarizer {}
+
+func (s *Summarizer) ComputeSummariesForColumns(columns ...ColumnType) error {}
+
+func (s *Summarizer) AggregateSummary() (*Summary, error)
+func (s *Summarizer) SummariesForColumn(column ColumnType) ([]*Summary, error)
+func (s *Summarizer) SortedSummariesForColumn(column ColumnType) ([]*Summary, error)
+
+```
