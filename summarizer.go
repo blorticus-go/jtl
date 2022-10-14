@@ -28,7 +28,7 @@ func (summary *ColumnUniqueValueSummary) KeyAsAString() string {
 type AggregateSummary struct {
 	TimestampOfFirstDataEntryAsUnixEpochMs uint64
 	TimestampOfLastDataEntryAsUnixEpochMs  uint64
-	AverageTPSRate                         uint64
+	AverageTPSRate                         float64
 	NumberOfMatchingRequests               uint
 	NumberOfSuccessfulRequests             int64 // -1 if this dimension is not possible
 	TimeToFirstByteStatistics              *SummaryStatistics
@@ -345,7 +345,7 @@ func summarizeFromADataSource(dataSource DataSource, aggregateStatsShouldBeCompu
 			if timespanOfDataRowsInSeconds <= 0 {
 				aggregateSummary.AverageTPSRate = 0
 			} else {
-				aggregateSummary.AverageTPSRate = uint64(tracker.aggregateData.numberOfRequests) / timespanOfDataRowsInSeconds
+				aggregateSummary.AverageTPSRate = float64(tracker.aggregateData.numberOfRequests) / float64(timespanOfDataRowsInSeconds)
 			}
 		}
 

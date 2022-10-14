@@ -231,7 +231,7 @@ func compareAggregateSummary(expect *jtl.AggregateSummary, got *jtl.AggregateSum
 	}
 
 	if expect.AverageTPSRate != got.AverageTPSRate {
-		return fmt.Errorf("expected aggregate summary AverageTPSRate = (%d), got = (%d)", expect.AverageTPSRate, got.AverageTPSRate)
+		return fmt.Errorf("expected aggregate summary AverageTPSRate = (%f), got = (%f)", expect.AverageTPSRate, got.AverageTPSRate)
 	}
 	if expect.TimestampOfFirstDataEntryAsUnixEpochMs != got.TimestampOfFirstDataEntryAsUnixEpochMs {
 		return fmt.Errorf("expected aggregate summary TimestampOfFirstDataEntryAsUnixEpochMs = (%d), got = (%d)", expect.TimestampOfFirstDataEntryAsUnixEpochMs, got.TimestampOfFirstDataEntryAsUnixEpochMs)
