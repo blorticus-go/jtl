@@ -27,4 +27,6 @@ var jtl_with_row_errors = `timeStamp,elapsed,label,responseCode,responseMessage,
 1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,"",0
 1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,"a"
 1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true
-1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0`
+1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
+1662749136503,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,\,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
+1662749136505,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,foo,0,0`

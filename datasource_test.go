@@ -104,7 +104,7 @@ func TestCsvDataSource(t *testing.T) {
 			CsvReader:                              strings.NewReader(jtl_with_row_errors),
 			ExpectFatalErrorOnCsvRead:              false,
 			ExpectedColumnSet:                      AllColumns,
-			NumberOfExpectedDataRowErrorsOnCsvRead: 9,
+			NumberOfExpectedDataRowErrorsOnCsvRead: 11,
 			ExpectedNumberOfDataRows:               4,
 			IndicesOfDataRowsToValidate:            []int{0},
 			ExpectedDataRowValues: []*jtl.DataRow{
@@ -180,11 +180,17 @@ func (testCase *TableOfColumnsTestCase) RunTest() error {
 		if !testCase.Table.HasTheColumn(column) {
 			return fmt.Errorf("expected table HasTheColumn(%s) to be true, but it was false", jtl.ColumnTypeAsAstring[column])
 		}
+		if !testCase.Table.IncludesTheColumn(column) {
+			return fmt.Errorf("expected table IncludesTheColumn(%s) to be true, but it was false", jtl.ColumnTypeAsAstring[column])
+		}
 	}
 
 	for column := range mapOfColumnTypes {
 		if testCase.Table.HasTheColumn(column) {
 			return fmt.Errorf("expected table HasTheColumn(%s) to be false, but it was true", jtl.ColumnTypeAsAstring[column])
+		}
+		if testCase.Table.IncludesTheColumn(column) {
+			return fmt.Errorf("expected table IncludesTheColumn(%s) to be false, but it was true", jtl.ColumnTypeAsAstring[column])
 		}
 	}
 
