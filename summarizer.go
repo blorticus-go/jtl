@@ -163,14 +163,6 @@ func (c *dataCollector) AddDataFromRow(row *DataRow, columnsInRowInclude *TableO
 	return c
 }
 
-func newDataCollectorIfNil(c *dataCollector) *dataCollector {
-	if c == nil {
-		return new(dataCollector)
-	}
-
-	return c
-}
-
 type uniqueColumnValueTracker struct {
 	columnsInDataSource                *TableOfColumns
 	collectedDataForUniqueColumnValues map[ColumnType]map[interface{}]*dataCollector
@@ -189,7 +181,15 @@ func newUniqueColumnValueTracker(forDataSource DataSource) *uniqueColumnValueTra
 
 func (u *uniqueColumnValueTracker) AddRowStatsToColumnAndValue(column ColumnType, columnValue interface{}, row *DataRow) {
 	if u.columnsInDataSource.IncludesTheColumn(column) {
-		u.collectedDataForUniqueColumnValues[column][columnValue] = newDataCollectorIfNil(u.collectedDataForUniqueColumnValues[column][columnValue]).AddDataFromRow(row, u.columnsInDataSource)
+		if u.collectedDataForUniqueColumnValues[column] == nil {
+			u.collectedDataForUniqueColumnValues[column] = make(map[interface{}]*dataCollector)
+		}
+
+		if u.collectedDataForUniqueColumnValues[column][columnValue] == nil {
+			u.collectedDataForUniqueColumnValues[column][columnValue] = new(dataCollector).AddDataFromRow(row, u.columnsInDataSource)
+		} else {
+			u.collectedDataForUniqueColumnValues[column][columnValue].AddDataFromRow(row, u.columnsInDataSource)
+		}
 	}
 }
 
@@ -206,8 +206,10 @@ type uniqueColumnValueCollectedData struct {
 func (u *uniqueColumnValueTracker) DataForCollectedUniqueColumnValues() []*uniqueColumnValueCollectedData {
 	d := make([]*uniqueColumnValueCollectedData, 0, 10)
 
-	for column, uniqueValue := range u.collectedDataForUniqueColumnValues {
-		d = append(d, &uniqueColumnValueCollectedData{column, uniqueValue, u.collectedDataForUniqueColumnValues[column][uniqueValue]})
+	for column, uniqueValueMap := range u.collectedDataForUniqueColumnValues {
+		for uniqueValue, valueCollector := range uniqueValueMap {
+			d = append(d, &uniqueColumnValueCollectedData{column, uniqueValue, valueCollector})
+		}
 	}
 
 	return d

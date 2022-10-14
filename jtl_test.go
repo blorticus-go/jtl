@@ -17,8 +17,7 @@ type ProcessorTestCase struct {
 	indicesOfDataRowsToValidate            []int
 	expectedDataRowValues                  []*jtl.DataRow
 	expectedAggregateSummary               *jtl.AggregateSummary
-	roundFloatResultsToTwoPlaces           bool
-	expectedSummariesForColumns            []*jtl.ColumnUniqueValueSummary
+	expectedSummariesForColumns            map[jtl.ColumnType][]*jtl.ColumnUniqueValueSummary
 }
 
 func (testCase *ProcessorTestCase) RunTest() error {
@@ -55,7 +54,12 @@ func (testCase *ProcessorTestCase) RunTest() error {
 
 	summarizer := jtl.NewSummarizerForDataSource(dataSource)
 
-	if err := summarizer.PreComputeAggregateSummaryAndSummariesForColumns(); err != nil {
+	expectedColumns := make([]jtl.ColumnType, 0, len(testCase.expectedSummariesForColumns))
+	for column := range testCase.expectedSummariesForColumns {
+		expectedColumns = append(expectedColumns, column)
+	}
+
+	if err := summarizer.PreComputeAggregateSummaryAndSummariesForColumns(expectedColumns...); err != nil {
 		return fmt.Errorf("on PreComputeAggregateSummaryAndSummariesForColumns() got error: %s", err.Error())
 	}
 
@@ -66,6 +70,27 @@ func (testCase *ProcessorTestCase) RunTest() error {
 
 	if err := compareAggregateSummary(testCase.expectedAggregateSummary, gotAggregateSummary); err != nil {
 		return err
+	}
+
+	for expectedColumn := range testCase.expectedSummariesForColumns {
+		expectedColumnUniqueValueSummarySet := testCase.expectedSummariesForColumns[expectedColumn]
+
+		gotColumnUniqueValueSumarySet, err := summarizer.SummariesForTheColumn(expectedColumn)
+		if err != nil {
+			return fmt.Errorf("on SummariesForTheColumn(%s), got error: %s", jtl.ColumnTypeAsAstring[expectedColumn], err.Error())
+		}
+
+		if err := compareColumnUniqueValueSummarySets(expectedColumnUniqueValueSummarySet, gotColumnUniqueValueSumarySet); err != nil {
+			return fmt.Errorf("on SummariesForTheColumn(%s): %s", jtl.ColumnTypeAsAstring[expectedColumn], err.Error())
+		}
+	}
+
+	return nil
+}
+
+func compareColumnUniqueValueSummarySets(expect []*jtl.ColumnUniqueValueSummary, got []*jtl.ColumnUniqueValueSummary) error {
+	if len(expect) != len(got) {
+		return fmt.Errorf("expected (%d) unique value summaries, got (%d)", len(expect), len(got))
 	}
 
 	return nil
@@ -304,6 +329,34 @@ func TestProcessor(t *testing.T) {
 					ValueAt95thPercentile:       44,
 				},
 			},
+			expectedSummariesForColumns: map[jtl.ColumnType][]*jtl.ColumnUniqueValueSummary{
+				jtl.Column.RequestURL: {
+					&jtl.ColumnUniqueValueSummary{
+						Column:                     jtl.Column.RequestURL,
+						Key:                        "http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html",
+						NumberOfMatchingRequests:   9,
+						NumberOfSuccessfulRequests: 9,
+						TimeToFirstByteStatistics: &jtl.SummaryStatistics{
+							Mean:                        56.44444444444444,
+							Median:                      43,
+							Maximum:                     162,
+							Minimum:                     43,
+							PopulationStandardDeviation: 37.321757464606534,
+							ValueAt5thPercentile:        43,
+							ValueAt95thPercentile:       44,
+						},
+						TimeToLastByteStatistics: &jtl.SummaryStatistics{
+							Mean:                        57.333333333333333,
+							Median:                      43,
+							Maximum:                     170,
+							Minimum:                     43,
+							PopulationStandardDeviation: 39.83577398380617,
+							ValueAt5thPercentile:        43,
+							ValueAt95thPercentile:       44,
+						},
+					},
+				},
+			},
 		},
 	} {
 		if err := testCase.RunTest(); err != nil {
@@ -311,17 +364,3 @@ func TestProcessor(t *testing.T) {
 		}
 	}
 }
-
-var jtl_header_only = `timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
-`
-
-var jtl_good_01 = `timeStamp,elapsed,label,responseCode,responseMessage,threadName,dataType,success,failureMessage,bytes,sentBytes,grpThreads,allThreads,URL,Latency,IdleTime,Connect
-1662749136019,170,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,162,0,100
-1662749136192,44,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
-1662749136237,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
-1662749136281,43,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,1
-1662749136325,44,get 1KiB.html,200,OK,Thread Group 1-2,text,true,,,2122,1,2,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,44,0,1
-1662749136370,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-1662749136414,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-1662749136458,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0
-1662749136502,43,get 1KiB.html,200,OK,Thread Group 1-1,text,true,,1430,0,1,1,http://nginx.cgam-perf-server-no-sidecar.svc/static/1KiB.html,43,0,0`

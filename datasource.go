@@ -226,6 +226,10 @@ type DataSource interface {
 	// HasTheColumn returns whether a Column of the identified type is present in the concrete source
 	HasTheColumn(ColumnType) bool
 
+	// DoesNotHaveTheColumn is returns the opposite of HasTheColumn().  It is provided to improve readability
+	// of the negative case.
+	DoesNotHaveTheColumn(ColumnType) bool
+
 	// AllAvailableColumns provides a lookup table of rows that are present in this data source
 	AllAvailableColumns() TableOfColumns
 }
@@ -295,6 +299,10 @@ func (dataSource *CsvDataSource) Rows() []*DataRow {
 
 func (dataSource *CsvDataSource) HasTheColumn(column ColumnType) bool {
 	return dataSource.columnsInDataSource.HasTheColumn(column)
+}
+
+func (dataSource *CsvDataSource) DoesNotHaveTheColumn(column ColumnType) bool {
+	return !dataSource.columnsInDataSource.HasTheColumn(column)
 }
 
 func (dataSource *CsvDataSource) AllAvailableColumns() TableOfColumns {
