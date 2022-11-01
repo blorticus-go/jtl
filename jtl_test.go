@@ -18,6 +18,7 @@ type ProcessorTestCase struct {
 	expectedDataRowValues                  []*jtl.DataRow
 	expectedAggregateSummary               *jtl.AggregateSummary
 	expectedSummariesForColumns            map[jtl.ColumnType][]*jtl.ColumnUniqueValueSummary
+	expectedSummariesForMetaColumns        map[jtl.ColumnType]*jtl.SummaryStatistics
 }
 
 func (testCase *ProcessorTestCase) RunTest() error {
@@ -54,8 +55,12 @@ func (testCase *ProcessorTestCase) RunTest() error {
 
 	summarizer := jtl.NewSummarizerForDataSource(dataSource)
 
-	expectedColumns := make([]jtl.ColumnType, 0, len(testCase.expectedSummariesForColumns))
+	expectedColumns := make([]jtl.ColumnType, 0, len(testCase.expectedSummariesForColumns)+len(testCase.expectedSummariesForMetaColumns))
 	for column := range testCase.expectedSummariesForColumns {
+		expectedColumns = append(expectedColumns, column)
+	}
+
+	for column := range testCase.expectedSummariesForMetaColumns {
 		expectedColumns = append(expectedColumns, column)
 	}
 
@@ -82,6 +87,19 @@ func (testCase *ProcessorTestCase) RunTest() error {
 
 		if err := compareColumnUniqueValueSummarySets(expectedColumnUniqueValueSummarySet, gotColumnUniqueValueSumarySet); err != nil {
 			return fmt.Errorf("on SummariesForTheColumn(%s): %s", jtl.ColumnTypeAsAstring[expectedColumn], err.Error())
+		}
+	}
+
+	for expectedMetaColumn := range testCase.expectedSummariesForMetaColumns {
+		expectedMetaColumnSummary := testCase.expectedSummariesForMetaColumns[expectedMetaColumn]
+
+		gotSummary, err := summarizer.SummaryForTheMetaColumn(expectedMetaColumn)
+		if err != nil {
+			return fmt.Errorf("on SummaryForTheMetaColumn(%s), got error: %s", jtl.ColumnTypeAsAstring[expectedMetaColumn], err.Error())
+		}
+
+		if err := compareSummaryStatistics(expectedMetaColumnSummary, gotSummary); err != nil {
+			return fmt.Errorf("when comparing SummaryStatistics for MetaColumn (%s): %s", jtl.ColumnTypeAsAstring[expectedMetaColumn], err.Error())
 		}
 	}
 
@@ -370,10 +388,51 @@ func TestProcessor(t *testing.T) {
 					},
 				},
 			},
+			expectedSummariesForMetaColumns: map[jtl.ColumnType]*jtl.SummaryStatistics{
+				jtl.MetaColumn.MovingTransactionsPerSecond: {
+					Mean:                        9.0,
+					Median:                      9.0,
+					Maximum:                     9.0,
+					Minimum:                     9.0,
+					PopulationStandardDeviation: 0.0,
+					ValueAt5thPercentile:        9.0,
+					ValueAt95thPercentile:       9.0,
+				},
+			},
 		},
 	} {
 		if err := testCase.RunTest(); err != nil {
 			t.Errorf("on test with index (%d): %s", testIndex, err.Error())
 		}
+	}
+}
+
+func TestJustTPS(t *testing.T) {
+	dataSource, dataRowErrors, fatalError := jtl.NewDataSourceFromCsv(strings.NewReader(jtl_good_02))
+	if len(dataRowErrors) != 0 {
+		t.Fatalf("Received (%d) dataRowErrors on NewDataSourceFromCsv", len(dataRowErrors))
+	}
+
+	if fatalError != nil {
+		t.Fatalf("Received fatalError on NewDataSourceFromCsv: %s", fatalError.Error())
+	}
+
+	summarizer := jtl.NewSummarizerForDataSource(dataSource)
+
+	summaryStats, err := summarizer.SummaryForTheMetaColumn(jtl.MetaColumn.MovingTransactionsPerSecond)
+	if err != nil {
+		t.Fatalf("on SummaryForTheMetaColumn, got error: %s", err.Error())
+	}
+
+	if err := compareSummaryStatistics(&jtl.SummaryStatistics{
+		Mean:                        4.25,
+		Median:                      4.5,
+		Maximum:                     8.0,
+		Minimum:                     0.0,
+		PopulationStandardDeviation: 2.8613807855648994,
+		ValueAt5thPercentile:        0.0,
+		ValueAt95thPercentile:       5.0,
+	}, summaryStats); err != nil {
+		t.Fatalf("on comparison of SummaryStatistics: %s", err.Error())
 	}
 }

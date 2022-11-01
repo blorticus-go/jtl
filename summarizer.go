@@ -1,6 +1,7 @@
 package jtl
 
 import (
+	"sort"
 	"strconv"
 
 	stats "github.com/blorticus-go/statistics"
@@ -72,13 +73,17 @@ func SummaryStatisticsFromDataSeries(series []float64) (*SummaryStatistics, erro
 type Summarizer struct {
 	dataSource                  DataSource
 	uniqueColumnValuesSummaries map[ColumnType][]*ColumnUniqueValueSummary
+	metaColumnSummaries         map[ColumnType]*SummaryStatistics
 	aggregateSummary            *AggregateSummary
 }
 
 // NewSummarizerForDataSource returns a new Summarizer for the attached DataSource.
 func NewSummarizerForDataSource(dataSource DataSource) *Summarizer {
 	return &Summarizer{
-		dataSource: dataSource,
+		dataSource:                  dataSource,
+		uniqueColumnValuesSummaries: make(map[ColumnType][]*ColumnUniqueValueSummary),
+		metaColumnSummaries:         make(map[ColumnType]*SummaryStatistics),
+		aggregateSummary:            nil,
 	}
 }
 
@@ -90,14 +95,29 @@ func NewSummarizerForDataSource(dataSource DataSource) *Summarizer {
 // Summary/Summaries calls will require the Summarizer to walk through the DataSource the first time a column
 // (and the aggregate) Summary/Summaries method is called.  By pre-computing, only one walk through the DataSource
 // is necessary.
-func (summarizer *Summarizer) PreComputeAggregateSummaryAndSummariesForColumns(column ...ColumnType) error {
-	mapOfSummariesForUniqueColumnValues, aggregateSummary, err := summarizeFromADataSource(summarizer.dataSource, true, makeColumnLookupTableFromColumnTypeSet(column...))
-	if err != nil {
+func (summarizer *Summarizer) PreComputeAggregateSummaryAndSummariesForColumns(columns ...ColumnType) error {
+	tracker := newUniqueColumnValueTracker(summarizer.dataSource)
+
+	iteratingTrackerUpdater := NewSummarizationIterator(tracker).
+		WhichShouldSummarizeStatsFor().
+		AggregateData().
+		TheColumns(columns...)
+
+	iteratingTrackerUpdater.ProcessAllRowsInTheDatasource(summarizer.dataSource)
+
+	var err error
+
+	if summarizer.aggregateSummary, err = summarizer.extractAggregateDataSummaryFromTracker(tracker); err != nil {
 		return err
 	}
 
-	summarizer.uniqueColumnValuesSummaries = mapOfSummariesForUniqueColumnValues
-	summarizer.aggregateSummary = aggregateSummary
+	if summarizer.uniqueColumnValuesSummaries, err = summarizer.convertTrackerDataToMapOfUniqueColumnValues(tracker); err != nil {
+		return err
+	}
+
+	if summarizer.metaColumnSummaries, err = summarizer.convertTrackerDataToMapOfMetaColumnSummaries(tracker); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -105,40 +125,218 @@ func (summarizer *Summarizer) PreComputeAggregateSummaryAndSummariesForColumns(c
 // AggregateSummary returns a Summary for all rows in the DataSource
 func (summarizer *Summarizer) AggregateSummary() (*AggregateSummary, error) {
 	if summarizer.aggregateSummary == nil {
-		if _, aggregateSummary, err := summarizeFromADataSource(summarizer.dataSource, true, &TableOfColumns{}); err != nil {
+		tracker := newUniqueColumnValueTracker(summarizer.dataSource)
+
+		iteratingTrackerUpdater := NewSummarizationIterator(tracker).
+			WhichShouldSummarizeStatsFor().
+			AggregateData()
+
+		iteratingTrackerUpdater.ProcessAllRowsInTheDatasource(summarizer.dataSource)
+
+		aggregateSummary, err := summarizer.extractAggregateDataSummaryFromTracker(tracker)
+		if err != nil {
 			return nil, err
-		} else {
-			summarizer.aggregateSummary = aggregateSummary
 		}
+
+		summarizer.aggregateSummary = aggregateSummary
 	}
 
 	return summarizer.aggregateSummary, nil
 }
 
 // SummariesForTheColumn returns a Summary list, with one element for each unique value in the named column.
-// The Summary applies only to the row with a column that matches the Summary.Key.
+// The Summary applies only to the rows with a column that matches the Summary.Key.  Use SummariesForTheMetaColumn
+// to retrieve summaries for a MetaColumn.
 func (summarizer *Summarizer) SummariesForTheColumn(column ColumnType) ([]*ColumnUniqueValueSummary, error) {
-	if !summarizer.dataSource.HasTheColumn(column) {
+	if summarizer.dataSource.DoesNotHaveTheColumn(column) {
 		return nil, nil
 	}
 
 	if summarizer.uniqueColumnValuesSummaries[column] == nil {
-		mapOfSummariesForUniqueColumnValues, _, err := summarizeFromADataSource(summarizer.dataSource, false, makeColumnLookupTableFromColumnTypeSet(column))
+		tracker := newUniqueColumnValueTracker(summarizer.dataSource)
+
+		iteratingTrackerUpdater := NewSummarizationIterator(tracker).
+			WhichShouldSummarizeStatsFor().
+			TheColumns(column)
+
+		iteratingTrackerUpdater.ProcessAllRowsInTheDatasource(summarizer.dataSource)
+
+		mapOfUniqueColumnValuesSummaries, err := summarizer.convertTrackerDataToMapOfUniqueColumnValues(tracker)
 		if err != nil {
 			return nil, err
 		}
 
-		summarizer.uniqueColumnValuesSummaries[column] = mapOfSummariesForUniqueColumnValues[column]
+		summarizer.uniqueColumnValuesSummaries[column] = mapOfUniqueColumnValuesSummaries[column]
 	}
 
 	return summarizer.uniqueColumnValuesSummaries[column], nil
 }
 
-// SortedSummariesForTheColumn is the same as SummariesForColumn(), but it returns the Summary list sorted
-// by Summary.Key in ascending order.  The sorting is type-appropriate.  That is, numbers are sorted
-// in numerical order, while strings are sorted in lexical order.
-func (summarizer *Summarizer) SortedSummariesForTheColumn(column ColumnType) ([]*ColumnUniqueValueSummary, error) {
+// SummariesForTheMetaColumn returns a StatisticSummary for the named meta column.
+func (summarizer *Summarizer) SummaryForTheMetaColumn(column ColumnType) (*SummaryStatistics, error) {
+	if summarizer.dataSource.DoesNotHaveTheColumnsNecessaryFor(column) {
+		return nil, nil
+	}
+
+	if summarizer.metaColumnSummaries[column] == nil {
+		tracker := newUniqueColumnValueTracker(summarizer.dataSource)
+
+		iteratingTrackerUpdater := NewSummarizationIterator(tracker).
+			WhichShouldSummarizeStatsFor().
+			TheColumns(column)
+
+		iteratingTrackerUpdater.ProcessAllRowsInTheDatasource(summarizer.dataSource)
+
+		mapOfMetaColumnSummaries, err := summarizer.convertTrackerDataToMapOfMetaColumnSummaries(tracker)
+		if err != nil {
+			return nil, err
+		}
+
+		summarizer.metaColumnSummaries = mapOfMetaColumnSummaries
+	}
+
+	return summarizer.metaColumnSummaries[column], nil
+}
+
+func (summarizer *Summarizer) extractAggregateDataSummaryFromTracker(tracker *uniqueColumnValueTracker) (*AggregateSummary, error) {
+	aggregateSummary := &AggregateSummary{
+		NumberOfMatchingRequests: tracker.aggregateData.numberOfRequests,
+	}
+
+	dataRows := summarizer.dataSource.Rows()
+
+	if len(dataRows) == 0 {
+		aggregateSummary.AverageTPSRate = 0
+		aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = 0
+		aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = 0
+	} else {
+		timestampOfFirstEntry := dataRows[0].TimestampAsUnixEpochMs
+		timestampOfLastEntry := dataRows[len(dataRows)-1].TimestampAsUnixEpochMs
+		aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = timestampOfFirstEntry
+		aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = timestampOfLastEntry
+
+		timespanOfDataRowsInSeconds := (timestampOfLastEntry - timestampOfFirstEntry) / 1000
+		if timespanOfDataRowsInSeconds <= 0 {
+			aggregateSummary.AverageTPSRate = 0
+		} else {
+			aggregateSummary.AverageTPSRate = float64(tracker.aggregateData.numberOfRequests) / float64(timespanOfDataRowsInSeconds)
+		}
+	}
+
+	if ttfbSummary, err := SummaryStatisticsFromDataSeries(tracker.aggregateData.timeToFirstByteSet); err != nil {
+		return nil, err
+	} else {
+		aggregateSummary.TimeToFirstByteStatistics = ttfbSummary
+	}
+
+	if ttlbSummary, err := SummaryStatisticsFromDataSeries(tracker.aggregateData.timeToLastByteSet); err != nil {
+		return nil, err
+	} else {
+		aggregateSummary.TimeToLastByteStatistics = ttlbSummary
+	}
+
+	if summarizer.dataSource.HasTheColumn(Column.RequestWasSuccesful) {
+		aggregateSummary.NumberOfSuccessfulRequests = int64(tracker.aggregateData.numberOfSuccessfulRequests)
+	} else {
+		aggregateSummary.NumberOfSuccessfulRequests = -1
+	}
+
+	return aggregateSummary, nil
+}
+
+func (summarizer *Summarizer) convertTrackerDataToMapOfUniqueColumnValues(tracker *uniqueColumnValueTracker) (map[ColumnType][]*ColumnUniqueValueSummary, error) {
+	summaryMap := make(map[ColumnType][]*ColumnUniqueValueSummary)
+
+	for _, collectedDataForColumnAndValue := range tracker.DataForCollectedUniqueColumnValues() {
+		summary := &ColumnUniqueValueSummary{
+			Column:                   collectedDataForColumnAndValue.Column,
+			Key:                      collectedDataForColumnAndValue.UniqueValueForColumn,
+			NumberOfMatchingRequests: collectedDataForColumnAndValue.Collector.numberOfRequests,
+		}
+
+		switch t := summary.Key.(type) {
+		case string:
+			summary.keyAsAString = t
+		case uint64:
+			summary.keyAsAString = strconv.FormatUint(t, 10)
+		case int:
+			summary.keyAsAString = strconv.FormatInt(int64(t), 10)
+		case bool:
+			summary.keyAsAString = strconv.FormatBool(t)
+		}
+
+		if ttfbSummary, err := SummaryStatisticsFromDataSeries(collectedDataForColumnAndValue.Collector.timeToFirstByteSet); err != nil {
+			return nil, err
+		} else {
+			summary.TimeToFirstByteStatistics = ttfbSummary
+		}
+
+		if ttlbSummary, err := SummaryStatisticsFromDataSeries(collectedDataForColumnAndValue.Collector.timeToLastByteSet); err != nil {
+			return nil, err
+		} else {
+			summary.TimeToLastByteStatistics = ttlbSummary
+		}
+
+		if summarizer.dataSource.HasTheColumn(Column.RequestWasSuccesful) {
+			summary.NumberOfSuccessfulRequests = int64(collectedDataForColumnAndValue.Collector.numberOfSuccessfulRequests)
+		} else {
+			summary.NumberOfSuccessfulRequests = -1
+		}
+
+		summaryMap[collectedDataForColumnAndValue.Column] = append(summaryMap[collectedDataForColumnAndValue.Column], summary)
+	}
+
+	return summaryMap, nil
+}
+
+func (summarizer *Summarizer) convertTrackerDataToMapOfMetaColumnSummaries(tracker *uniqueColumnValueTracker) (map[ColumnType]*SummaryStatistics, error) {
+	mapOfResponseCountByTimestamp := tracker.TransactionsPerSecond()
+
+	if mapOfResponseCountByTimestamp != nil {
+		dataSet := make([]float64, 0, len(mapOfResponseCountByTimestamp))
+
+		allAccountedTimestamps := Keys(mapOfResponseCountByTimestamp)
+		sort.Slice(allAccountedTimestamps, func(i, j int) bool { return allAccountedTimestamps[i] < allAccountedTimestamps[j] })
+
+		if len(allAccountedTimestamps) == 0 {
+			return nil, nil
+		}
+
+		dataSet = append(dataSet, float64(mapOfResponseCountByTimestamp[allAccountedTimestamps[0]]))
+		lastProcessedTimestamp := allAccountedTimestamps[0]
+
+		for _, nextTimestampInKeySet := range allAccountedTimestamps[1:] {
+			// one second intervals without a value are implicitly zero transactions in that one second period
+			for ts := lastProcessedTimestamp + 1; ts < nextTimestampInKeySet; ts++ {
+				dataSet = append(dataSet, 0)
+			}
+
+			dataSet = append(dataSet, float64(mapOfResponseCountByTimestamp[nextTimestampInKeySet]))
+			lastProcessedTimestamp = nextTimestampInKeySet
+		}
+
+		summaryStats, err := SummaryStatisticsFromDataSeries(dataSet)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[ColumnType]*SummaryStatistics{
+			MetaColumn.MovingTransactionsPerSecond: summaryStats,
+		}, nil
+	}
+
 	return nil, nil
+}
+
+func Keys[M ~map[K]V, K comparable, V any](m M) []K {
+	r := make([]K, len(m))
+	i := 0
+	for k := range m {
+		r[i] = k
+		i++
+	}
+
+	return r
 }
 
 type dataCollector struct {
@@ -170,15 +368,17 @@ type uniqueColumnValueTracker struct {
 	columnsInDataSource                *TableOfColumns
 	collectedDataForUniqueColumnValues map[ColumnType]map[interface{}]*dataCollector
 	aggregateData                      *dataCollector
+	mapOfResponsesReceivedEachSecond   map[uint64]uint
 }
 
 func newUniqueColumnValueTracker(forDataSource DataSource) *uniqueColumnValueTracker {
-	t := forDataSource.AllAvailableColumns()
+	allColumnsInDataSource := forDataSource.AllAvailableColumns()
 
 	return &uniqueColumnValueTracker{
-		columnsInDataSource:                &t,
+		columnsInDataSource:                &allColumnsInDataSource,
 		collectedDataForUniqueColumnValues: make(map[ColumnType]map[interface{}]*dataCollector),
 		aggregateData:                      new(dataCollector),
+		mapOfResponsesReceivedEachSecond:   make(map[uint64]uint),
 	}
 }
 
@@ -198,6 +398,10 @@ func (u *uniqueColumnValueTracker) AddRowStatsToColumnAndValue(column ColumnType
 
 func (u *uniqueColumnValueTracker) AddRowStatsToAggregate(row *DataRow) {
 	u.aggregateData.AddDataFromRow(row, u.columnsInDataSource)
+}
+
+func (u *uniqueColumnValueTracker) IncrementTransactionCounterForSecondTimestamp(timestamp uint64) {
+	u.mapOfResponsesReceivedEachSecond[timestamp]++
 }
 
 type uniqueColumnValueCollectedData struct {
@@ -222,153 +426,129 @@ func (u *uniqueColumnValueTracker) CollectedAggregateData() *dataCollector {
 	return u.aggregateData
 }
 
-func summarizeFromADataSource(dataSource DataSource, aggregateStatsShouldBeComputed bool, wantColumnStatsFor *TableOfColumns) (summaryForUniqueColumnValues map[ColumnType][]*ColumnUniqueValueSummary, aggregateSummary *AggregateSummary, err error) {
-	tracker := newUniqueColumnValueTracker(dataSource)
+func (u *uniqueColumnValueTracker) TransactionsPerSecond() map[uint64]uint {
+	return u.mapOfResponsesReceivedEachSecond
+}
 
-	for _, row := range dataSource.Rows() {
-		if aggregateStatsShouldBeComputed {
-			tracker.AddRowStatsToAggregate(row)
-		}
+type rowElementProcessor func(tracker *uniqueColumnValueTracker, row *DataRow)
 
-		if wantColumnStatsFor.AllThreads {
-			tracker.AddRowStatsToColumnAndValue(Column.AllThreads, row.AllThreads, row)
-		}
-		if wantColumnStatsFor.ConnectTime {
-			tracker.AddRowStatsToColumnAndValue(Column.ConnectTime, row.ConnectTimeInMs, row)
-		}
-		if wantColumnStatsFor.DataType {
-			tracker.AddRowStatsToColumnAndValue(Column.DataType, row.DataType, row)
-		}
-		if wantColumnStatsFor.FailureMessage {
-			tracker.AddRowStatsToColumnAndValue(Column.FailureMessage, row.FailureMessage, row)
-		}
-		if wantColumnStatsFor.GroupThreads {
-			tracker.AddRowStatsToColumnAndValue(Column.GroupThreads, row.GroupThreads, row)
-		}
-		if wantColumnStatsFor.IdleTime {
-			tracker.AddRowStatsToColumnAndValue(Column.IdleTime, row.IdleTimeInMs, row)
-		}
-		if wantColumnStatsFor.RequestBodySizeInBytes {
-			tracker.AddRowStatsToColumnAndValue(Column.RequestBodySizeInBytes, row.RequestBodySizeInBytes, row)
-		}
-		if wantColumnStatsFor.RequestURL {
-			tracker.AddRowStatsToColumnAndValue(Column.RequestURL, row.RequestURLString, row)
-		}
-		if wantColumnStatsFor.ResponseBytesReceived {
-			tracker.AddRowStatsToColumnAndValue(Column.ResponseBytesReceived, row.ResponseBytesReceived, row)
-		}
-		if wantColumnStatsFor.ResponseCodeOrErrorMessage {
-			tracker.AddRowStatsToColumnAndValue(Column.ResponseCodeOrErrorMessage, row.ResponseCodeOrErrorMessage, row)
-		}
-		if wantColumnStatsFor.ResponseMessage {
-			tracker.AddRowStatsToColumnAndValue(Column.ResponseMessage, row.ResponseMessage, row)
-		}
-		if wantColumnStatsFor.ResultLabel {
-			tracker.AddRowStatsToColumnAndValue(Column.ResultLabel, row.SampleResultLabel, row)
-		}
-		if wantColumnStatsFor.SuccessFlag {
-			tracker.AddRowStatsToColumnAndValue(Column.RequestWasSuccesful, row.RequestWasSuccessful, row)
-		}
-		if wantColumnStatsFor.ThreadName {
-			tracker.AddRowStatsToColumnAndValue(Column.ThreadName, row.ThreadNameText, row)
-		}
-		if wantColumnStatsFor.TimeToFirstByte {
-			tracker.AddRowStatsToColumnAndValue(Column.TimeToFirstByte, row.TimeToFirstByte, row)
-		}
-		if wantColumnStatsFor.TimeToLastByte {
-			tracker.AddRowStatsToColumnAndValue(Column.TimeToLastByte, row.TimeToLastByte, row)
-		}
-		if wantColumnStatsFor.TimestampAsUnixEpochMs {
-			tracker.AddRowStatsToColumnAndValue(Column.Timestamp, row.TimestampAsUnixEpochMs, row)
+type summarizationIterator struct {
+	tracker                    *uniqueColumnValueTracker
+	processorsForEachRowOfData []rowElementProcessor
+}
+
+func NewSummarizationIterator(trackerToWhichStatsShouldBeAdded *uniqueColumnValueTracker) *summarizationIterator {
+	return &summarizationIterator{
+		tracker:                    trackerToWhichStatsShouldBeAdded,
+		processorsForEachRowOfData: make([]rowElementProcessor, 0, 10),
+	}
+}
+
+func (iterator *summarizationIterator) WhichShouldSummarizeStatsFor() *summarizationIterator {
+	return iterator
+}
+
+func (iterator *summarizationIterator) ShouldSummarizeStatsFor() *summarizationIterator {
+	return iterator
+}
+
+func (iterator *summarizationIterator) AggregateData() *summarizationIterator {
+	iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+		tracker.AddRowStatsToAggregate(row)
+	})
+
+	return iterator
+}
+
+func (iterator *summarizationIterator) TheColumns(columnsThatShouldBeProcessed ...ColumnType) *summarizationIterator {
+	for _, column := range columnsThatShouldBeProcessed {
+		switch column {
+		case Column.AllThreads:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.AllThreads, row.AllThreads, row)
+			})
+		case Column.ConnectTime:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ConnectTime, row.ConnectTimeInMs, row)
+			})
+		case Column.DataType:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.DataType, row.DataType, row)
+			})
+		case Column.FailureMessage:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.FailureMessage, row.FailureMessage, row)
+			})
+		case Column.GroupThreads:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.GroupThreads, row.GroupThreads, row)
+			})
+		case Column.IdleTime:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.IdleTime, row.IdleTimeInMs, row)
+			})
+		case Column.RequestBodySizeInBytes:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.RequestBodySizeInBytes, row.RequestBodySizeInBytes, row)
+			})
+		case Column.RequestURL:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.RequestURL, row.RequestURLString, row)
+			})
+		case Column.RequestWasSuccesful:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.RequestWasSuccesful, row.RequestWasSuccessful, row)
+			})
+		case Column.ResponseBytesReceived:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ResponseBytesReceived, row.ResponseBytesReceived, row)
+			})
+		case Column.ResponseCodeOrErrorMessage:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ResponseCodeOrErrorMessage, row.ResponseCodeOrErrorMessage, row)
+			})
+		case Column.ResponseMessage:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ResponseMessage, row.ResponseMessage, row)
+			})
+		case Column.ResultLabel:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ResultLabel, row.SampleResultLabel, row)
+			})
+		case Column.ThreadName:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.ThreadName, row.ThreadNameText, row)
+			})
+		case Column.TimeToFirstByte:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.TimeToFirstByte, row.TimeToFirstByte, row)
+			})
+		case Column.TimeToLastByte:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.TimeToLastByte, row.TimeToLastByte, row)
+			})
+		case Column.Timestamp:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.AddRowStatsToColumnAndValue(Column.Timestamp, row.TimestampAsUnixEpochMs, row)
+			})
+		case MetaColumn.MovingTransactionsPerSecond:
+			iterator.processorsForEachRowOfData = append(iterator.processorsForEachRowOfData, func(tracker *uniqueColumnValueTracker, row *DataRow) {
+				tracker.IncrementTransactionCounterForSecondTimestamp(row.TimestampAsUnixEpochMs / 1000)
+			})
 		}
 	}
 
-	summaryMap := make(map[ColumnType][]*ColumnUniqueValueSummary)
+	return iterator
+}
 
-	for _, collectedDataForColumnAndValue := range tracker.DataForCollectedUniqueColumnValues() {
-		summary := &ColumnUniqueValueSummary{
-			Column:                   collectedDataForColumnAndValue.Column,
-			Key:                      collectedDataForColumnAndValue.UniqueValueForColumn,
-			NumberOfMatchingRequests: collectedDataForColumnAndValue.Collector.numberOfRequests,
-		}
-
-		switch t := summary.Key.(type) {
-		case string:
-			summary.keyAsAString = t
-		case uint64:
-			summary.keyAsAString = strconv.FormatUint(t, 10)
-		case int:
-			summary.keyAsAString = strconv.FormatInt(int64(t), 10)
-		case bool:
-			summary.keyAsAString = strconv.FormatBool(t)
-		}
-
-		if ttfbSummary, err := SummaryStatisticsFromDataSeries(collectedDataForColumnAndValue.Collector.timeToFirstByteSet); err != nil {
-			return nil, nil, err
-		} else {
-			summary.TimeToFirstByteStatistics = ttfbSummary
-		}
-
-		if ttlbSummary, err := SummaryStatisticsFromDataSeries(collectedDataForColumnAndValue.Collector.timeToLastByteSet); err != nil {
-			return nil, nil, err
-		} else {
-			summary.TimeToLastByteStatistics = ttlbSummary
-		}
-
-		if dataSource.HasTheColumn(Column.RequestWasSuccesful) {
-			summary.NumberOfSuccessfulRequests = int64(collectedDataForColumnAndValue.Collector.numberOfSuccessfulRequests)
-		} else {
-			summary.NumberOfSuccessfulRequests = -1
-		}
-
-		summaryMap[collectedDataForColumnAndValue.Column] = append(summaryMap[collectedDataForColumnAndValue.Column], summary)
+func (iterator *summarizationIterator) ProcessTheRow(row *DataRow) {
+	for _, processor := range iterator.processorsForEachRowOfData {
+		processor(iterator.tracker, row)
 	}
+}
 
-	if aggregateStatsShouldBeComputed {
-		aggregateSummary := &AggregateSummary{
-			NumberOfMatchingRequests: tracker.aggregateData.numberOfRequests,
-		}
-
-		dataRows := dataSource.Rows()
-
-		if len(dataRows) == 0 {
-			aggregateSummary.AverageTPSRate = 0
-			aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = 0
-			aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = 0
-		} else {
-			timestampOfFirstEntry := dataRows[0].TimestampAsUnixEpochMs
-			timestampOfLastEntry := dataRows[len(dataRows)-1].TimestampAsUnixEpochMs
-			aggregateSummary.TimestampOfFirstDataEntryAsUnixEpochMs = timestampOfFirstEntry
-			aggregateSummary.TimestampOfLastDataEntryAsUnixEpochMs = timestampOfLastEntry
-
-			timespanOfDataRowsInSeconds := (timestampOfLastEntry - timestampOfFirstEntry) / 1000
-			if timespanOfDataRowsInSeconds <= 0 {
-				aggregateSummary.AverageTPSRate = 0
-			} else {
-				aggregateSummary.AverageTPSRate = float64(tracker.aggregateData.numberOfRequests) / float64(timespanOfDataRowsInSeconds)
-			}
-		}
-
-		if ttfbSummary, err := SummaryStatisticsFromDataSeries(tracker.aggregateData.timeToFirstByteSet); err != nil {
-			return nil, nil, err
-		} else {
-			aggregateSummary.TimeToFirstByteStatistics = ttfbSummary
-		}
-
-		if ttlbSummary, err := SummaryStatisticsFromDataSeries(tracker.aggregateData.timeToLastByteSet); err != nil {
-			return nil, nil, err
-		} else {
-			aggregateSummary.TimeToLastByteStatistics = ttlbSummary
-		}
-
-		if dataSource.HasTheColumn(Column.RequestWasSuccesful) {
-			aggregateSummary.NumberOfSuccessfulRequests = int64(tracker.aggregateData.numberOfSuccessfulRequests)
-		} else {
-			aggregateSummary.NumberOfSuccessfulRequests = -1
-		}
-
-		return summaryMap, aggregateSummary, nil
+func (iterator *summarizationIterator) ProcessAllRowsInTheDatasource(source DataSource) {
+	for _, row := range source.Rows() {
+		iterator.ProcessTheRow(row)
 	}
-
-	return summaryMap, nil, nil
 }

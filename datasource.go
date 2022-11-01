@@ -68,24 +68,31 @@ var Column = struct {
 	ConnectTime:                17,
 }
 
+var MetaColumn = struct {
+	MovingTransactionsPerSecond ColumnType
+}{
+	MovingTransactionsPerSecond: 18,
+}
+
 var ColumnTypeAsAstring = map[ColumnType]string{
-	Column.Timestamp:                  "Timestamp",
-	Column.TimeToLastByte:             "TimeToLastByte",
-	Column.ResultLabel:                "ResultLabel",
-	Column.ResponseCodeOrErrorMessage: "ResponseCode",
-	Column.ResponseMessage:            "ResponseMessage",
-	Column.ThreadName:                 "ThreadName",
-	Column.DataType:                   "DataType",
-	Column.RequestWasSuccesful:        "RequestWasSuccesful",
-	Column.FailureMessage:             "FailureMessage",
-	Column.ResponseBytesReceived:      "ResponseBytesReceived",
-	Column.RequestBodySizeInBytes:     "RequestBodySizeInBytes",
-	Column.GroupThreads:               "GroupThreads",
-	Column.AllThreads:                 "AllThreads",
-	Column.RequestURL:                 "RequestURL",
-	Column.TimeToFirstByte:            "TimeToFirstByte",
-	Column.IdleTime:                   "IdleTime",
-	Column.ConnectTime:                "ConnectTime",
+	Column.Timestamp:                       "Timestamp",
+	Column.TimeToLastByte:                  "TimeToLastByte",
+	Column.ResultLabel:                     "ResultLabel",
+	Column.ResponseCodeOrErrorMessage:      "ResponseCode",
+	Column.ResponseMessage:                 "ResponseMessage",
+	Column.ThreadName:                      "ThreadName",
+	Column.DataType:                        "DataType",
+	Column.RequestWasSuccesful:             "RequestWasSuccesful",
+	Column.FailureMessage:                  "FailureMessage",
+	Column.ResponseBytesReceived:           "ResponseBytesReceived",
+	Column.RequestBodySizeInBytes:          "RequestBodySizeInBytes",
+	Column.GroupThreads:                    "GroupThreads",
+	Column.AllThreads:                      "AllThreads",
+	Column.RequestURL:                      "RequestURL",
+	Column.TimeToFirstByte:                 "TimeToFirstByte",
+	Column.IdleTime:                        "IdleTime",
+	Column.ConnectTime:                     "ConnectTime",
+	MetaColumn.MovingTransactionsPerSecond: "AggregateTransactionsPerSecond",
 }
 
 var CsvHeaderLabelToColumnType = map[string]ColumnType{
@@ -126,6 +133,10 @@ type TableOfColumns struct {
 	TimestampAsUnixEpochMs     bool
 	TimeToFirstByte            bool
 	TimeToLastByte             bool
+}
+
+type TableOfMetaColumns struct {
+	AggregateTransactionsPerSecond bool
 }
 
 func (table *TableOfColumns) HasTheColumn(column ColumnType) bool {
@@ -218,6 +229,19 @@ func makeColumnLookupTableFromColumnTypeSet(columnSet ...ColumnType) *TableOfCol
 	return columnsPresentLookupTable
 }
 
+func makeMetaColumnLookupTableFromColumnTypeSet(columnSet ...ColumnType) *TableOfMetaColumns {
+	columnsPresentLookupTable := &TableOfMetaColumns{}
+
+	for _, columnType := range columnSet {
+		switch columnType {
+		case MetaColumn.MovingTransactionsPerSecond:
+			columnsPresentLookupTable.AggregateTransactionsPerSecond = true
+		}
+	}
+
+	return columnsPresentLookupTable
+}
+
 // DataSource represent a normalized view of JTL data
 type DataSource interface {
 	// Rows returns the data rows that have processed from the concrete source
@@ -229,6 +253,13 @@ type DataSource interface {
 	// DoesNotHaveTheColumn is returns the opposite of HasTheColumn().  It is provided to improve readability
 	// of the negative case.
 	DoesNotHaveTheColumn(ColumnType) bool
+
+	// HasTheColumnsNecessaryFor takes a MetaColumn and determines whether the concrete source has
+	// all of the column necessary to provide the MetaColumn summarized information.
+	HasTheColumnsNecessaryFor(ColumnType) bool
+
+	// DoesNotHaveTheColumnsNecessaryFor is the opposite of HasTheColumnsNecessaryFor.
+	DoesNotHaveTheColumnsNecessaryFor(ColumnType) bool
 
 	// AllAvailableColumns provides a lookup table of rows that are present in this data source
 	AllAvailableColumns() TableOfColumns
@@ -303,6 +334,18 @@ func (dataSource *CsvDataSource) HasTheColumn(column ColumnType) bool {
 
 func (dataSource *CsvDataSource) DoesNotHaveTheColumn(column ColumnType) bool {
 	return !dataSource.columnsInDataSource.HasTheColumn(column)
+}
+
+func (dataSource *CsvDataSource) HasTheColumnsNecessaryFor(metaColumn ColumnType) bool {
+	if metaColumn == MetaColumn.MovingTransactionsPerSecond {
+		return dataSource.columnsInDataSource.HasTheColumn(Column.Timestamp)
+	}
+
+	return false
+}
+
+func (dataSource *CsvDataSource) DoesNotHaveTheColumnsNecessaryFor(metaColumn ColumnType) bool {
+	return !dataSource.HasTheColumnsNecessaryFor(metaColumn)
 }
 
 func (dataSource *CsvDataSource) AllAvailableColumns() TableOfColumns {
